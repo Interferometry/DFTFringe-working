@@ -1,0 +1,189 @@
+name: build-macos
+
+on:
+  push:
+    branches: 
+      - master
+  pull_request:
+  workflow_dispatch:  
+  workflow_call:
+
+env:
+  QT_version: 5.15.2
+  QWT_version: 6.1.6
+  openCV_version: 4.6.0
+  lapack_version: 3.11.0
+  armadillo_version: 12.6.7
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew install cmake ninja pkg-config wget
+
+      - name: Cache Qt and dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path:  |
+            ~/Qt-${{ env.QT_version }}
+            ~/opencv-${{ env.openCV_version }}
+            ~/qwt-${{ env.QWT_version }}
+            ~/lapack-${{ env.lapack_version }}
+            ~/armadillo-${{ env.armadillo_version }}
+          key:  ${{ runner.os }}-all-deps-${{ env.QT_version }}-${{ env.openCV_version }}-${{ env.QWT_version }}-${{ env.lapack_version }}-${{ env.armadillo_version }}
+
+      - name: Build LAPACK ${{ env.lapack_version }}
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run:  |
+          cd ~
+          wget https://github.com/Reference-LAPACK/lapack/archive/refs/tags/v${{ env. lapack_version }}.tar. gz
+          tar -xzf v${{ env.lapack_version }}.tar.gz
+          cd lapack-${{ env. lapack_version }}
+          mkdir -p build && cd build
+          cmake ..  \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=~/lapack-${{ env.lapack_version }} \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLAPACKE=ON
+          cmake --build . -j$(sysctl -n hw.ncpu)
+          cmake --install . 
+
+      - name: Build Armadillo ${{ env.armadillo_version }}
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget https://sourceforge.net/projects/arma/files/armadillo-${{ env.armadillo_version }}.tar.xz
+          tar -xf armadillo-${{ env.armadillo_version }}.tar. xz
+          cd armadillo-${{ env.armadillo_version }}
+          mkdir -p build && cd build
+          cmake ..  \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=~/armadillo-${{ env.armadillo_version }} \
+            -DDETECT_HDF5=OFF
+          cmake --build . -j$(sysctl -n hw.ncpu)
+          cmake --install . 
+
+      - name: Build Qt ${{ env.QT_version }}
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget https://download.qt.io/official_releases/qt/5.15/${{ env.QT_version }}/single/qt-everywhere-src-${{ env.QT_version }}. tar.xz
+          tar -xf qt-everywhere-src-${{ env.QT_version }}.tar.xz
+          cd qt-everywhere-src-${{ env. QT_version }}
+          ./configure \
+            -prefix ~/Qt-${{ env.QT_version }} \
+            -release \
+            -opensource \
+            -confirm-license \
+            -nomake examples \
+            -nomake tests \
+            -skip qtwebengine \
+            -skip qttools \
+            -platform macx-clang
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+      - name:  Build OpenCV ${{ env.openCV_version }}
+        if: steps. cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget https://github.com/opencv/opencv/archive/${{ env.openCV_version }}.tar.gz
+          tar -xzf ${{ env.openCV_version }}.tar.gz
+          cd opencv-${{ env.openCV_version }}
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=~/opencv-${{ env.openCV_version }} \
+            -DBUILD_SHARED_LIBS=ON \
+            -DWITH_QT=ON \
+            -DQt5_DIR=~/Qt-${{ env.QT_version }}/lib/cmake/Qt5 \
+            -DWITH_OPENGL=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_EXAMPLES=OFF
+          cmake --build . -j$(sysctl -n hw.ncpu)
+          cmake --install . 
+
+      - name: Build Qwt ${{ env.QWT_version }}
+        if: steps. cache-deps.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          wget https://sourceforge.net/projects/qwt/files/qwt/${{ env.QWT_version }}/qwt-${{ env.QWT_version }}.tar.bz2
+          tar -xjf qwt-${{ env.QWT_version }}.tar.bz2
+          cd qwt-${{ env.QWT_version }}
+          ~/Qt-${{ env.QT_version }}/bin/qmake QWT_INSTALL_PREFIX=~/qwt-${{ env.QWT_version }}
+          make -j$(sysctl -n hw.ncpu)
+          make install
+
+      - name:  Build DFTFringe
+        run: |
+          export PATH=~/Qt-${{ env.QT_version }}/bin:$PATH
+          export Qt5_DIR=~/Qt-${{ env.QT_version }}/lib/cmake/Qt5
+          
+          cd ${{ github.workspace }}
+          mkdir -p build && cd build
+          
+          ~/Qt-${{ env.QT_version }}/bin/qmake ../DFTFringe.pro \
+            "QWT_PATH=~/qwt-${{ env.QWT_version }}" \
+            "OPENCV_PATH=~/opencv-${{ env.openCV_version }}" \
+            "LAPACK_PATH=~/lapack-${{ env.lapack_version }}" \
+            "ARMADILLO_PATH=~/armadillo-${{ env.armadillo_version }}"
+          
+          make -j$(sysctl -n hw.ncpu)
+
+      - name: Create macOS Application Bundle
+        run: |
+          export PATH=~/Qt-${{ env.QT_version }}/bin:$PATH
+          
+          APP_BUNDLE="${{ github.workspace }}/DFTFringe. app"
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+          
+          cp "${{ github.workspace }}/build/DFTFringe" "$APP_BUNDLE/Contents/MacOS/"
+          cp -r ColorMaps "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+          cp -r res "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
+          
+          cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>DFTFringe</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.interferometry. dftfringe</string>
+              <key>CFBundleName</key>
+              <string>DFTFringe</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleVersion</key>
+              <string>1.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+          
+          ~/Qt-${{ env.QT_version }}/bin/macdeployqt "$APP_BUNDLE" -dmg
+          
+          cp ~/qwt-${{ env.QWT_version }}/lib/libqwt*. dylib "$APP_BUNDLE/Contents/Frameworks/" 2>/dev/null || true
+          cp ~/opencv-${{ env.openCV_version }}/lib/libopencv_*.dylib "$APP_BUNDLE/Contents/Frameworks/" 2>/dev/null || true
+          cp ~/armadillo-${{ env.armadillo_version }}/lib/libarmadillo*.dylib "$APP_BUNDLE/Contents/Frameworks/" 2>/dev/null || true
+          cp ~/lapack-${{ env. lapack_version }}/lib/*. dylib "$APP_BUNDLE/Contents/Frameworks/" 2>/dev/null || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name:  DFTFringe-macos-build-artifact
+          path: |
+            ${{ github.workspace }}/DFTFringe. app/
+            ${{ github.workspace }}/DFTFringe. dmg
+          retention-days: 30
